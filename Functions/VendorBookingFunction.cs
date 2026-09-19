@@ -12,12 +12,14 @@ public class VendorBookingFunction
     private readonly ILogger<VendorBookingFunction> _logger;
     private readonly IXmlParserService _xmlParser;
     private readonly BookingValidator _validator;
+    private readonly ICosmosRepository _cosmosRepository;
 
-    public VendorBookingFunction(ILogger<VendorBookingFunction> logger, IXmlParserService xmlParser, BookingValidator bookingValidator)
+    public VendorBookingFunction(ILogger<VendorBookingFunction> logger, IXmlParserService xmlParser, BookingValidator bookingValidator, ICosmosRepository cosmosRepository)
     {
         _logger = logger;
         _xmlParser = xmlParser;
         _validator = bookingValidator;
+        _cosmosRepository = cosmosRepository;
     }
 
     [Function("VendorBookingFunction")]
@@ -27,7 +29,8 @@ public class VendorBookingFunction
             Connection = "ServiceBusConnection")]
         ServiceBusReceivedMessage message)
     {
-        _logger.LogInformation("Message received MessageId:{MessageId}", message.MessageId);
+        var messageId = message.MessageId;
+        _logger.LogInformation("Message received MessageId:{MessageId}", messageId);
 
         var xml = message.Body.ToString();
         _logger.LogInformation("Message body:{Body}", xml);
@@ -51,7 +54,40 @@ public class VendorBookingFunction
             booking.BookingId,
             booking.VendorId);
 
-        await Task.CompletedTask;
+        var processedMessage = new Models.Messaging.ProcessedMessage
+        {
+            Id = messageId,
+            MessageId = messageId,
+
+            BookingId = booking.BookingId,
+            CorrelationId =
+                message.CorrelationId ?? Guid.NewGuid().ToString(),
+            Status = "Processed",
+
+            ProcessedAt = DateTime.UtcNow
+
+        };
+         var isNewMessage =
+            await _cosmosRepository
+                .TryCreateProcessingRecordAsync(
+                    processedMessage);
+
+         if (!isNewMessage)
+        {
+            _logger.LogWarning(
+                "Duplicate message detected. " +
+                "MessageId: {MessageId}, BookingId: {BookingId}",
+                messageId,
+                booking.BookingId);
+
+            return;
+        }
+
+        _logger.LogInformation(
+            "Message processing record saved to Cosmos. MessageId: {MessageId}",
+            messageId);
+
+            await Task.CompletedTask;
     }
 
 }
